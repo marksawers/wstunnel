@@ -32,11 +32,20 @@ var _ fmt.Formatter
 // https://groups.google.com/forum/#!topic/golang-nuts/oBIh_R7-pJQ
 //const cliTout = 300 // http read/write/idle timeout
 
-//ErrRetry Error when sending request
+// ErrRetry Error when sending request
 var ErrRetry = errors.New("Error sending request, please retry")
 
 const tunnelInactiveKillTimeout = 60 * time.Minute   // close dead tunnels
 const tunnelInactiveRefuseTimeout = 10 * time.Minute // refuse requests for dead tunnels
+
+// ===== ENV Vars =====
+const MANAGEMENT_AUTH_TOKEN_ENV_VAR = "MANAGEMENT_AUTH_TOKEN"
+const MANAGEMENT_AUTH_TOKEN_HEADER = "X-Auth-Management"
+const PAYLOAD_AUTH_TOKEN_ENV_VAR = "PAYLOAD_AUTH_TOKEN"
+const PAYLOAD_AUTH_TOKEN_HEADER = "X-Auth-Payload"
+
+var MANAGEMENT_AUTH_TOKEN = os.Getenv(MANAGEMENT_AUTH_TOKEN_ENV_VAR)
+var PAYLOAD_AUTH_TOKEN = os.Getenv(PAYLOAD_AUTH_TOKEN_ENV_VAR)
 
 //===== Data Structures =====
 
@@ -79,7 +88,7 @@ type remoteServer struct {
 	log             log15.Logger
 }
 
-//WSTunnelServer a wstunnel server construct
+// WSTunnelServer a wstunnel server construct
 type WSTunnelServer struct {
 	Port                int                     // port to listen on
 	Host                string                  // host to listen on
@@ -118,9 +127,18 @@ func ipAddrLookup(log log15.Logger, ipAddr string) (dns, who string) {
 
 //===== Main =====
 
-//NewWSTunnelServer function to create wstunnel from cli
+// NewWSTunnelServer function to create wstunnel from cli
 func NewWSTunnelServer(args []string) *WSTunnelServer {
 	wstunSrv := WSTunnelServer{}
+
+	if MANAGEMENT_AUTH_TOKEN == "" {
+		fmt.Println("MANAGEMENT_AUTH_TOKEN env var not set")
+		os.Exit(1)
+	}
+	if PAYLOAD_AUTH_TOKEN == "" {
+		fmt.Println("PAYLOAD_AUTH_TOKEN env var not set")
+		os.Exit(1)
+	}
 
 	var srvFlag = flag.NewFlagSet("server", flag.ExitOnError)
 	srvFlag.IntVar(&wstunSrv.Port, "port", 80, "port for http/ws server to listen on")
@@ -147,7 +165,7 @@ func NewWSTunnelServer(args []string) *WSTunnelServer {
 	return &wstunSrv
 }
 
-//Start wstunnel server start
+// Start wstunnel server start
 func (t *WSTunnelServer) Start(listener net.Listener) {
 	t.Log.Info(VV)
 	if t.serverRegistry != nil {
@@ -208,7 +226,7 @@ func (t *WSTunnelServer) Start(listener net.Listener) {
 	}()
 }
 
-//Stop wstunnelserver stop
+// Stop wstunnelserver stop
 func (t *WSTunnelServer) Stop() {
 	t.exitChan <- struct{}{}
 }
@@ -217,11 +235,23 @@ func (t *WSTunnelServer) Stop() {
 
 // Handler for health check
 func checkHandler(t *WSTunnelServer, w http.ResponseWriter, r *http.Request) {
+	if !isInternalRequestValid("stats", r) {
+		t.Log.Info("Management request has missing or invalid auth token", "req", r)
+		http.Error(w, "Unauthorized request", 401)
+		return
+	}
+
 	fmt.Fprintln(w, "WSTUNSRV RUNNING")
 }
 
 // Handler for stats
 func statsHandler(t *WSTunnelServer, w http.ResponseWriter, r *http.Request) {
+	if !isInternalRequestValid("stats", r) {
+		t.Log.Info("Management request has missing or invalid auth token", "req", r)
+		http.Error(w, "Unauthorized request", 401)
+		return
+	}
+
 	// let's start by doing a GC to ensure we reclaim file descriptors (?)
 	runtime.GC()
 
@@ -312,6 +342,12 @@ func payloadPrefixHandler(t *WSTunnelServer, w http.ResponseWriter, r *http.Requ
 
 // payloadHandler is called by payloadHeaderHandler and payloadPrefixHandler to do the real work.
 func payloadHandler(t *WSTunnelServer, w http.ResponseWriter, r *http.Request, tok token) {
+	if !isInternalRequestValid("payload", r) {
+		t.Log.Info("Payload request has missing or invalid auth token", "req", r)
+		http.Error(w, "Unauthorized request", 401)
+		return
+	}
+
 	// create the request object
 	req := makeRequest(r, t.HTTPTimeout)
 	req.log = t.Log.New("token", cutToken(tok))
@@ -533,4 +569,12 @@ func (t *WSTunnelServer) idleTunnelReaper() {
 		time.Sleep(time.Minute)
 	}
 	//t.Log.Debug("idleTunnelReaper ended")
+}
+
+func isInternalRequestValid(requestType string, request *http.Request) bool {
+	if requestType == "payload" {
+		return request.Header.Get(PAYLOAD_AUTH_TOKEN_HEADER) == PAYLOAD_AUTH_TOKEN
+	} else {
+		return request.Header.Get(MANAGEMENT_AUTH_TOKEN_HEADER) == MANAGEMENT_AUTH_TOKEN
+	}
 }

@@ -36,3 +36,6 @@ version.go
 vendor/
 build/
 .vscode/
+
+# macOS
+.DS_Store

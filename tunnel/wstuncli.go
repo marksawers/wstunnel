@@ -89,7 +89,7 @@ var httpClient http.Client // client used for all requests, gets special transpo
 
 //===== Main =====
 
-//NewWSTunnelClient Creates a new WSTunnelClient from command line
+// NewWSTunnelClient Creates a new WSTunnelClient from command line
 func NewWSTunnelClient(args []string) *WSTunnelClient {
 	wstunCli := WSTunnelClient{}
 
@@ -226,7 +226,7 @@ func NewWSTunnelClient(args []string) *WSTunnelClient {
 	return &wstunCli
 }
 
-//Start creates the wstunnel connection.
+// Start creates the wstunnel connection.
 func (t *WSTunnelClient) Start() error {
 	t.Log.Info(VV)
 
@@ -252,7 +252,17 @@ func (t *WSTunnelClient) Start() error {
 		tr := &http.Transport{
 			TLSClientConfig: &tlsClientConfig,
 		}
-		httpClient = http.Client{Transport: tr}
+		httpClient = http.Client{Transport: tr,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return checkRedirectAddHeaders(req, via, t.conn.Log)
+			},
+		}
+	} else {
+		httpClient = http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return checkRedirectAddHeaders(req, via, t.conn.Log)
+			},
+		}
 	}
 
 	if t.InternalServer != nil {
@@ -341,7 +351,7 @@ func (t *WSTunnelClient) Start() error {
 	return nil
 }
 
-//Stop closes the wstunnel channel
+// Stop closes the wstunnel channel
 func (t *WSTunnelClient) Stop() {
 	t.exitChan <- struct{}{}
 	if t.conn != nil && t.conn.ws != nil {
@@ -491,7 +501,7 @@ func (t *WSTunnelClient) wsDialerLocalPort(network string, addr string, ports []
 	return nil, err
 }
 
-//===== Proxy support =====
+// ===== Proxy support =====
 // Bits of this taken from golangs net/http/transport.go. Gorilla websocket lib
 // allows you to pass in a custom net.Dial function, which it will call instead
 // of net.Dial. net.Dial normally just opens up a tcp socket for you. We go one
@@ -737,6 +747,7 @@ func (wsc *WSConnection) finishRequest(id int16, req *http.Request) {
 	if err != nil {
 		log.Warn("error dumping request", "err", err.Error())
 	}
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		//dump2, _ := httputil.DumpResponse(resp, true)
@@ -811,4 +822,17 @@ func concoctResponse(req *http.Request, message string, code int) *http.Response
 	r.Header.Add("date", time.Now().Format(time.RFC1123))
 	r.Header.Add("server", "wstunnel")
 	return &r
+}
+
+// Add the Authorization header to the redirected request
+func checkRedirectAddHeaders(req *http.Request, via []*http.Request, log log15.Logger) error {
+	log.Info("Redirected to:", req.URL.String())
+	auth := via[0].Header.Get("Authorization")
+	if auth != "" {
+		log.Info("Adding header Authorization: ", auth[:6], "***")
+		req.Header.Add("Authorization", auth)
+	} else {
+		log.Info("No auth header")
+	}
+	return nil
 }
